@@ -11,6 +11,8 @@ export const auth = betterAuth({
     github: {
       clientId: process.env.GITHUB_CLIENT_ID as string,
       clientSecret: process.env.GITHUB_CLIENT_SECRET as string,
+      // `repo` is required to read the user's private repositories.
+      scope: ["read:user", "user:email", "repo"],
     },
   },
 });
