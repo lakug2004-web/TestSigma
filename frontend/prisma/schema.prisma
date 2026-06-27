@@ -74,3 +74,20 @@ model Verification {
 
   @@map("verification")
 }
+
+// ---------------------------------------------------------------------------
+// Cached AST analysis result (RepoTree JSON) per user + repository.
+// Lets us serve a previously generated AST instead of re-analyzing.
+// ---------------------------------------------------------------------------
+
+model RepoAst {
+  id        String   @id @default(cuid())
+  userId    String
+  fullName  String
+  tree      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, fullName])
+  @@map("repo_ast")
+}
