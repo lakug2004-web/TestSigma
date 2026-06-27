@@ -37,6 +37,7 @@ name = "backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "browser-use-sdk" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain" },
@@ -51,6 +52,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "browser-use-sdk", specifier = ">=3.8.4" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "langchain", specifier = ">=0.3" },
@@ -61,6 +63,19 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.7" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
+]
+
+[[package]]
+name = "browser-use-sdk"
+version = "3.8.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1e/5b/9f52925c3dc1bc651a67031c3d456ce39731fbca870be55b3fedd5555498/browser_use_sdk-3.8.4.tar.gz", hash = "sha256:9dbabc8971e676c8c454b877ba87142a7cebc39c2b4c2888ff16ad3bed1412f6", size = 203882, upload-time = "2026-06-10T11:18:37.308Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/3e/67206e2526e73ad4e4064009d6216000fa5e09381681a11104b868592f30/browser_use_sdk-3.8.4-py3-none-any.whl", hash = "sha256:55f1fd41f6753529ace4b583377b5bf12d61bf85f32abf8bd458e8dd331efa83", size = 64702, upload-time = "2026-06-10T11:18:36.201Z" },
 ]
 
 [[package]]

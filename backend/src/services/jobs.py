@@ -17,11 +17,18 @@ import time
 import uuid
 
 from src.config import get_settings
-from src.models.schemas import JobState, JobStatus
+from src.models.schemas import (
+    CrawlRequest,
+    IngestRequest,
+    JobState,
+    JobStatus,
+)
 from src.services.ast_parser import build_tree
+from src.services.crawler import crawl_app
 from src.services.describer import describe_tree
 from src.services.github_fetch import download_tarball
 from src.services.graph import build_knowledge_graph
+from src.services.ingest import ingest_doc
 
 logger = logging.getLogger("jobs")
 
@@ -116,6 +123,59 @@ async def run_job(
         logger.info("job %s DONE — %s", job_id, tree.summary)
     except Exception as exc:  # noqa: BLE001
         logger.exception("job %s FAILED: %s", job_id, exc)
+        status.state = JobState.error
+        status.error = str(exc)
+        status.message = "failed"
+
+
+async def run_crawl_job(job_id: str, req: CrawlRequest) -> None:
+    """Crawl a live app into persisted DOM/screenshot/a11y artifacts."""
+    status = store.get(job_id)
+    if status is None:
+        return
+
+    async def progress(value: float, message: str) -> None:
+        status.progress = round(min(max(value, 0.0), 1.0), 3)
+        status.message = message
+
+    try:
+        logger.info("crawl job %s START %s", job_id, req.base_url)
+        status.state = JobState.running
+        await progress(0.02, "Launching browser")
+        result = await crawl_app(req, progress)
+        status.crawl_result = result
+        status.state = JobState.done
+        status.progress = 1.0
+        status.message = f"crawled {result.screen_count} screens"
+        logger.info("crawl job %s DONE — %d screens", job_id, result.screen_count)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("crawl job %s FAILED: %s", job_id, exc)
+        status.state = JobState.error
+        status.error = str(exc)
+        status.message = "failed"
+
+
+async def run_ingest_job(job_id: str, req: IngestRequest) -> None:
+    """Parse a PRD/README into structured requirements."""
+    status = store.get(job_id)
+    if status is None:
+        return
+
+    try:
+        logger.info("ingest job %s START %s (%s)", job_id, req.source, req.source_type)
+        status.state = JobState.running
+        status.progress = 0.1
+        status.message = "Fetching and parsing document"
+        result = await ingest_doc(req)
+        status.ingest_result = result
+        status.state = JobState.done
+        status.progress = 1.0
+        status.message = f"extracted {result.requirement_count} requirements"
+        logger.info(
+            "ingest job %s DONE — %d requirements", job_id, result.requirement_count
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ingest job %s FAILED: %s", job_id, exc)
         status.state = JobState.error
         status.error = str(exc)
         status.message = "failed"

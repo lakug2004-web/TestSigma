@@ -43,6 +43,32 @@ class Settings(BaseSettings):
     max_file_bytes: int = 200_000
     llm_concurrency: int = 5
 
+    # --- Crawl layer (Playwright) --------------------------------------------
+    # Where DOM/screenshot/a11y artifacts are written, one subdir per run_id.
+    crawl_artifact_dir: str = "artifacts"
+    crawl_headless: bool = True
+    # Hard caps so an autonomous crawl always halts.
+    crawl_max_screens: int = 40
+    crawl_max_depth: int = 3
+    crawl_nav_timeout_ms: int = 20_000
+    # When True, label each screen with the LLM (skipped if no OpenRouter key).
+    crawl_llm_labeling: bool = True
+    # Max bytes of DOM HTML inlined per screen for DB persistence.
+    crawl_max_dom_bytes: int = 400_000
+
+    # --- browser-use cloud SDK (does the actual crawl + summarize) -----------
+    # Get a key at https://cloud.browser-use.com/settings?tab=api-keys
+    browser_use_api_key: str = Field(default="", repr=False)
+    # How many routes to crawl in parallel (each is its own cloud session).
+    crawl_browseruse_concurrency: int = 3
+
+    # --- Supabase Storage (S3 bucket for screenshots) ------------------------
+    # If service_role_key is empty, the crawler falls back to inlining a base64
+    # data: URI so the frontend can still display the screenshot.
+    supabase_url: str = ""
+    supabase_service_role_key: str = Field(default="", repr=False)
+    supabase_storage_bucket: str = "crawl-artifacts"
+
     # How long finished jobs are retained in the in-memory store (seconds).
     job_ttl_seconds: int = 3600
 

@@ -13,6 +13,9 @@ import {
   ExternalLinkIcon,
   CopyIcon,
   CheckIcon,
+  CompassIcon,
+  PlusIcon,
+  Trash2Icon,
 } from "lucide-react"
 import type { GitHubRepo, RepoStats } from "@/lib/github"
 import type { RepoTree, GraphInfo } from "@/lib/analyze"
@@ -23,6 +26,19 @@ import {
   buildGraph,
   treeHasDescriptions,
 } from "@/lib/analyze"
+import type {
+  CrawlResult,
+  RouteSpec,
+  SavedCrawl,
+  ScreenInfo as CrawlScreenInfo,
+} from "@/lib/crawl"
+import {
+  startCrawl,
+  pollCrawlUntilDone,
+  saveCrawl,
+  fetchCrawls,
+} from "@/lib/crawl"
+import { Input } from "@/components/ui/input"
 import {
   Dialog,
   DialogContent,
@@ -40,6 +56,12 @@ import dynamic from "next/dynamic"
 // client-only (no SSR).
 const AstGraph = dynamic(
   () => import("@/components/dashboard/ast-graph").then((m) => m.AstGraph),
+  { ssr: false },
+)
+
+// chart.js touches `window` at import time → client-only, like AstGraph.
+const CrawlGraph = dynamic(
+  () => import("@/components/dashboard/crawl-graph").then((m) => m.CrawlGraph),
   { ssr: false },
 )
 
@@ -75,6 +97,32 @@ export function RepoStatsDialog({
   const [graphError, setGraphError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
 
+  // Live-app crawl state (UI / "what was built" layer).
+  const [crawlBaseUrl, setCrawlBaseUrl] = useState("")
+  const [crawlRoutes, setCrawlRoutes] = useState<RouteSpec[]>([
+    { path: "/", authenticated: false },
+  ])
+  const [loginUrl, setLoginUrl] = useState("")
+  const [loginUser, setLoginUser] = useState("")
+  const [loginPass, setLoginPass] = useState("")
+  const [crawlState, setCrawlState] = useState<
+    "idle" | "running" | "done" | "error"
+  >("idle")
+  const [crawlProgress, setCrawlProgress] = useState(0)
+  const [crawlMessage, setCrawlMessage] = useState("")
+  const [crawlError, setCrawlError] = useState<string | null>(null)
+  const [crawlResult, setCrawlResult] = useState<CrawlResult | null>(null)
+  const crawlAbortRef = useRef<AbortController | null>(null)
+  const needsLogin = crawlRoutes.some((r) => r.authenticated)
+  // Screen-relationship graph view + the selected screen's browser response.
+  const [crawlGraphOpen, setCrawlGraphOpen] = useState(false)
+  const [selectedScreen, setSelectedScreen] = useState<CrawlScreenInfo | null>(null)
+  // Previously saved crawls for this repo (loaded when the popup opens).
+  const [savedCrawls, setSavedCrawls] = useState<SavedCrawl[]>([])
+  const [crawlSaved, setCrawlSaved] = useState<
+    { ok: boolean; error?: string } | null
+  >(null)
+
   // Reset AST + graph state whenever a different repo is opened.
   useEffect(() => {
     abortRef.current?.abort()
@@ -89,10 +137,51 @@ export function RepoStatsDialog({
     setGraphInfo(null)
     setGraphError(null)
     setCopied(null)
+    crawlAbortRef.current?.abort()
+    crawlAbortRef.current = null
+    setCrawlBaseUrl("")
+    setCrawlRoutes([{ path: "/", authenticated: false }])
+    setLoginUrl("")
+    setLoginUser("")
+    setLoginPass("")
+    setCrawlState("idle")
+    setCrawlProgress(0)
+    setCrawlMessage("")
+    setCrawlError(null)
+    setCrawlResult(null)
+    setCrawlGraphOpen(false)
+    setSelectedScreen(null)
+    setSavedCrawls([])
+    setCrawlSaved(null)
   }, [repo])
 
+  // Load this repo's saved crawls when the popup opens. The most recent run is
+  // shown straight away (and its routes pre-fill the editor) so reopening a repo
+  // restores the crawl results — graph, screenshots and browser responses.
+  useEffect(() => {
+    if (!open || !repo) return
+    let cancelled = false
+    fetchCrawls(repo.full_name).then((runs) => {
+      if (cancelled || runs.length === 0) return
+      setSavedCrawls(runs)
+      const latest = runs[0]
+      setCrawlResult(latest.result)
+      setCrawlState("done")
+      setCrawlBaseUrl(latest.result.base_url)
+      if (latest.routes.length > 0) setCrawlRoutes(latest.routes)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, repo])
+
   // Abort any in-flight poll on unmount.
-  useEffect(() => () => abortRef.current?.abort(), [])
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+      crawlAbortRef.current?.abort()
+    }
+  }, [])
 
   /**
    * Produce a RepoTree for the active repo: serve the cached AST when it has
@@ -184,6 +273,87 @@ export function RepoStatsDialog({
   async function generateGraph() {
     const t = tree ?? (await runAnalysis(false))
     if (t) await graphFromTree(t)
+  }
+
+  function addRoute() {
+    setCrawlRoutes((r) => [...r, { path: "", authenticated: false }])
+  }
+  function updateRoute(i: number, patch: Partial<RouteSpec>) {
+    setCrawlRoutes((r) => r.map((x, j) => (j === i ? { ...x, ...patch } : x)))
+  }
+  function removeRoute(i: number) {
+    setCrawlRoutes((r) => r.filter((_, j) => j !== i))
+  }
+
+  // Crawl the explicit route list. Authenticated routes are visited in a
+  // logged-in browser context (the backend logs in once via the login config
+  // and reuses that session). The backend captures DOM/screenshot/a11y per
+  // route, infers the screen-relationship graph, and uploads screenshots to
+  // Supabase Storage; we then persist the run into Postgres.
+  async function runCrawl() {
+    const base = crawlBaseUrl.trim()
+    const routes = crawlRoutes
+      .map((r) => ({ ...r, path: r.path.trim() }))
+      .filter((r) => r.path.length > 0)
+    if (!base) {
+      setCrawlError("Enter the base application URL")
+      setCrawlState("error")
+      return
+    }
+    if (routes.length === 0) {
+      setCrawlError("Add at least one route to crawl")
+      setCrawlState("error")
+      return
+    }
+    if (needsLogin && (!loginUrl.trim() || !loginUser.trim() || !loginPass)) {
+      setCrawlError("Authenticated routes need login URL, username and password")
+      setCrawlState("error")
+      return
+    }
+    crawlAbortRef.current?.abort()
+    const controller = new AbortController()
+    crawlAbortRef.current = controller
+    setCrawlState("running")
+    setCrawlError(null)
+    setCrawlResult(null)
+    setCrawlProgress(0)
+    setCrawlMessage("Launching browser…")
+    try {
+      const jobId = await startCrawl({
+        base_url: base,
+        routes,
+        login: needsLogin
+          ? {
+              login_url: loginUrl.trim(),
+              username: loginUser.trim(),
+              password: loginPass,
+            }
+          : undefined,
+      })
+      const result = await pollCrawlUntilDone(
+        jobId,
+        (s) => {
+          setCrawlProgress(Math.round(s.progress * 100))
+          setCrawlMessage(s.message)
+        },
+        controller.signal,
+      )
+      setCrawlResult(result)
+      setCrawlState("done")
+      // Persist and surface the real outcome (no silent drop), then refresh the
+      // saved-crawls list so reopening this repo shows it.
+      if (repo) {
+        const saved = await saveCrawl(repo.full_name, routes, result)
+        setCrawlSaved(saved)
+        if (saved.ok) {
+          fetchCrawls(repo.full_name).then(setSavedCrawls)
+        }
+      }
+    } catch (err) {
+      if (controller.signal.aborted) return
+      setCrawlError(err instanceof Error ? err.message : "Crawl failed")
+      setCrawlState("error")
+    }
   }
 
   // Action 3: build both — AST view + knowledge graph.
@@ -455,6 +625,232 @@ export function RepoStatsDialog({
                   </a>
                 </div>
               ) : null}
+
+              {/* Live-app crawl: explicit route list with per-route auth. The
+                  backend visits each route, captures DOM/screenshot/a11y, and
+                  persists everything for the future PR blast-radius step. */}
+              <div className="mt-4 border-t border-border pt-4">
+                <h4 className="text-sm font-medium">Live application crawl</h4>
+                <p className="text-xs text-muted-foreground">
+                  List the routes to capture and mark each public or
+                  authenticated. The browser visits each, captures DOM +
+                  screenshot, and maps how the screens connect.
+                </p>
+
+                {savedCrawls.length > 0 ? (
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      Saved crawls:
+                    </span>
+                    <select
+                      className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs"
+                      value={crawlResult?.run_id ?? ""}
+                      onChange={(e) => {
+                        const run = savedCrawls.find(
+                          (r) => r.result.run_id === e.target.value,
+                        )
+                        if (!run) return
+                        setCrawlResult(run.result)
+                        setCrawlState("done")
+                        setCrawlBaseUrl(run.result.base_url)
+                        if (run.routes.length > 0) setCrawlRoutes(run.routes)
+                      }}
+                      disabled={crawlState === "running"}
+                    >
+                      {savedCrawls.map((r) => (
+                        <option key={r.id} value={r.result.run_id}>
+                          {new Date(r.createdAt).toLocaleString()} ·{" "}
+                          {r.result.screen_count} screens
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+
+                <Input
+                  type="url"
+                  inputMode="url"
+                  placeholder="Base URL — https://app.example.com"
+                  className="mt-3"
+                  value={crawlBaseUrl}
+                  onChange={(e) => setCrawlBaseUrl(e.target.value)}
+                  disabled={crawlState === "running"}
+                />
+
+                <div className="mt-2 space-y-2">
+                  {crawlRoutes.map((r, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <Input
+                        placeholder="/route/path"
+                        value={r.path}
+                        onChange={(e) => updateRoute(i, { path: e.target.value })}
+                        disabled={crawlState === "running"}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={r.authenticated ? "default" : "outline"}
+                        className="shrink-0"
+                        onClick={() =>
+                          updateRoute(i, { authenticated: !r.authenticated })
+                        }
+                        disabled={crawlState === "running"}
+                        title="Toggle authenticated / public"
+                      >
+                        {r.authenticated ? (
+                          <LockIcon className="size-3.5" />
+                        ) : (
+                          <GlobeIcon className="size-3.5" />
+                        )}
+                        {r.authenticated ? "Auth" : "Public"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="shrink-0"
+                        onClick={() => removeRoute(i)}
+                        disabled={crawlState === "running" || crawlRoutes.length === 1}
+                      >
+                        <Trash2Icon className="size-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={addRoute}
+                    disabled={crawlState === "running"}
+                  >
+                    <PlusIcon className="size-3.5" />
+                    Add route
+                  </Button>
+                </div>
+
+                {needsLogin ? (
+                  <div className="mt-2 space-y-2 rounded-lg border border-border bg-muted/40 p-3">
+                    <p className="flex items-center gap-1.5 text-xs font-medium">
+                      <LockIcon className="size-3.5" />
+                      Login (used once, session reused for authed routes)
+                    </p>
+                    <Input
+                      type="url"
+                      placeholder="Login page URL"
+                      value={loginUrl}
+                      onChange={(e) => setLoginUrl(e.target.value)}
+                      disabled={crawlState === "running"}
+                    />
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Username / email"
+                        value={loginUser}
+                        onChange={(e) => setLoginUser(e.target.value)}
+                        disabled={crawlState === "running"}
+                      />
+                      <Input
+                        type="password"
+                        placeholder="Password"
+                        value={loginPass}
+                        onChange={(e) => setLoginPass(e.target.value)}
+                        disabled={crawlState === "running"}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+
+                <Button
+                  className="mt-3 w-full"
+                  size="sm"
+                  onClick={runCrawl}
+                  disabled={crawlState === "running"}
+                >
+                  {crawlState === "running" ? (
+                    <Loader2Icon className="size-4 animate-spin" />
+                  ) : (
+                    <CompassIcon className="size-4" />
+                  )}
+                  Crawl {crawlRoutes.length} route
+                  {crawlRoutes.length === 1 ? "" : "s"}
+                </Button>
+
+                {crawlState === "running" ? (
+                  <div className="mt-3 space-y-1.5">
+                    <Progress value={crawlProgress} />
+                    <p className="truncate text-xs text-muted-foreground">
+                      {crawlProgress}% · {crawlMessage}
+                    </p>
+                  </div>
+                ) : null}
+
+                {crawlState === "error" ? (
+                  <p className="mt-3 text-xs text-destructive">{crawlError}</p>
+                ) : null}
+
+                {crawlState === "done" && crawlResult ? (
+                  <div className="mt-3 space-y-3 rounded-lg border border-brand/30 bg-brand/5 p-3">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <CompassIcon className="size-4 text-brand" />
+                      Crawled {crawlResult.screen_count} screens
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="secondary">
+                        {crawlResult.transitions.length} relationships
+                      </Badge>
+                      <Badge variant="outline" className="font-mono">
+                        {crawlResult.run_id}
+                      </Badge>
+                      {crawlSaved === null ? (
+                        <Badge variant="outline">loaded from DB</Badge>
+                      ) : crawlSaved.ok ? (
+                        <Badge variant="outline">saved to DB</Badge>
+                      ) : (
+                        <Badge variant="destructive">
+                          save failed: {crawlSaved.error}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {crawlResult.screens.map((s) => (
+                        <div
+                          key={s.screen_id}
+                          className="overflow-hidden rounded-md border border-border bg-background"
+                        >
+                          {s.screenshot_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={s.screenshot_url}
+                              alt={s.label || s.title || s.url}
+                              className="h-24 w-full object-cover object-top"
+                            />
+                          ) : null}
+                          <div className="p-1.5">
+                            <p className="truncate text-[11px] font-medium">
+                              {s.authenticated ? "🔒" : "🌐"}{" "}
+                              {s.label || s.title || s.url}
+                            </p>
+                            <p className="truncate text-[10px] text-muted-foreground">
+                              {s.interactive_count} controls
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => {
+                        setSelectedScreen(crawlResult.screens[0] ?? null)
+                        setCrawlGraphOpen(true)
+                      }}
+                    >
+                      <NetworkIcon className="size-4" />
+                      View screen graph &amp; browser responses
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
         )}
@@ -497,7 +893,106 @@ export function RepoStatsDialog({
           </div>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={crawlGraphOpen} onOpenChange={setCrawlGraphOpen}>
+        <DialogContent className="flex h-[90vh] w-[95vw] max-w-[95vw] flex-col sm:max-w-[95vw]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <NetworkIcon className="size-4 text-brand" />
+              Screen graph · {crawlResult?.base_url}
+            </DialogTitle>
+            <DialogDescription>
+              Nodes are crawled screens; edges are inferred relationships (a link
+              on one screen pointing at another). Click a node to inspect the
+              browser response captured for that screen.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid min-h-0 flex-1 grid-cols-[1fr_380px] gap-4">
+            <div className="min-h-0">
+              {crawlResult ? (
+                <CrawlGraph result={crawlResult} onSelect={setSelectedScreen} />
+              ) : null}
+            </div>
+            <ScreenResponsePanel screen={selectedScreen} />
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
+  )
+}
+
+// Right-hand panel: the raw browser response captured for one screen —
+// screenshot, rendered DOM, accessibility tree, and interactive elements.
+function ScreenResponsePanel({ screen }: { screen: CrawlScreenInfo | null }) {
+  if (!screen) {
+    return (
+      <div className="flex items-center justify-center rounded-lg border border-border bg-card text-sm text-muted-foreground">
+        Select a screen
+      </div>
+    )
+  }
+  return (
+    <div className="flex min-h-0 flex-col gap-3 overflow-hidden rounded-lg border border-border bg-card p-3">
+      <div>
+        <p className="flex items-center gap-1.5 text-sm font-medium">
+          {screen.authenticated ? (
+            <LockIcon className="size-3.5" />
+          ) : (
+            <GlobeIcon className="size-3.5" />
+          )}
+          {screen.label || screen.title || screen.url}
+        </p>
+        <p className="truncate text-[11px] text-muted-foreground">{screen.url}</p>
+      </div>
+
+      {screen.screenshot_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={screen.screenshot_url}
+          alt={screen.label || screen.url}
+          className="max-h-48 w-full rounded-md border border-border object-cover object-top"
+        />
+      ) : null}
+
+      {/* browser-use's structured summary of the screen. */}
+      {screen.purpose || screen.primary_actions.length ? (
+        <div className="rounded-md border border-brand/30 bg-brand/5 p-2 text-[11px]">
+          {screen.purpose ? <p className="mb-1.5">{screen.purpose}</p> : null}
+          {screen.primary_actions.length ? (
+            <div className="mb-1 flex flex-wrap gap-1">
+              {screen.primary_actions.map((a, i) => (
+                <span
+                  key={i}
+                  className="rounded bg-brand/15 px-1.5 py-0.5 text-[10px] text-foreground"
+                >
+                  {a}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {screen.key_components.length ? (
+            <p className="text-[10px] text-muted-foreground">
+              Components: {screen.key_components.join(", ")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <p className="text-xs font-medium">Links ({screen.elements.length})</p>
+      <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-muted/40 p-2">
+        <ul className="space-y-1">
+          {screen.elements.map((el, i) => (
+            <li key={i} className="font-mono text-[10px] text-muted-foreground">
+              {el.text ? <span className="text-foreground">{el.text}</span> : null}
+              {el.href ? ` → ${el.href}` : ""}
+            </li>
+          ))}
+          {screen.elements.length === 0 ? (
+            <li className="text-[11px] text-muted-foreground">(no links captured)</li>
+          ) : null}
+        </ul>
+      </div>
+    </div>
   )
 }
 

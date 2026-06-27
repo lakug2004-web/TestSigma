@@ -15,6 +15,7 @@ dependencies = [
     "langgraph>=0.2",
     "python-dotenv>=1.0",
     "neo4j>=5.26",
+    "browser-use-sdk>=3.8.4",
 ]
 
 [build-system]

@@ -10,3 +10,6 @@ __pycache__
 .env.development.local
 .env.test.local
 .env.production.local
+# Crawl artifacts (DOM/screenshots/a11y) — may contain session data
+artifacts/
+storage_state*.json

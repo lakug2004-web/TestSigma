@@ -91,3 +91,46 @@ model RepoAst {
   @@unique([userId, fullName])
   @@map("repo_ast")
 }
+
+// ---------------------------------------------------------------------------
+// Live-app crawl: one run captures N screens (DOM + a11y + screenshot) plus the
+// screen-relationship graph (edges). Screenshots live in Supabase Storage; the
+// row holds their public URL. DOM/elements/a11y/edges are stored as JSON.
+// ---------------------------------------------------------------------------
+
+model CrawlRun {
+  id          String        @id @default(cuid())
+  userId      String
+  fullName    String // GitHub repo this crawl belongs to (owner/repo)
+  baseUrl     String
+  // The exact route list the user provided: [{ path, authenticated }].
+  routes      Json          @default("[]")
+  runId       String        @unique // backend run id (artifact namespace)
+  screenCount Int           @default(0)
+  // The screen-relationship graph: [{ from, to, via }] edges as JSON.
+  edges       Json          @default("[]")
+  createdAt   DateTime      @default(now())
+  screens     CrawlScreen[]
+
+  @@index([userId, fullName])
+  @@map("crawl_run")
+}
+
+model CrawlScreen {
+  id              String   @id @default(cuid())
+  runId           String
+  run             CrawlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  screenId        String // stable hash from the crawler
+  url             String
+  title           String   @default("")
+  label           String   @default("")
+  authenticated   Boolean  @default(false)
+  screenshotUrl   String   @default("") // Supabase Storage public URL (or data URI fallback)
+  interactiveCount Int     @default(0)
+  // Full captured artifacts as JSON: { dom, a11y, elements }.
+  artifacts       Json     @default("{}")
+  createdAt       DateTime @default(now())
+
+  @@index([runId])
+  @@map("crawl_screen")
+}

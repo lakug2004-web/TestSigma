@@ -8,6 +8,7 @@ The same shape is mirrored in the frontend's `lib/analyze.ts`.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -122,6 +123,136 @@ class GraphRequest(BaseModel):
     tree: RepoTree
 
 
+# --- Crawl layer (UI / "what was built") -------------------------------------
+class LoginConfig(BaseModel):
+    """Selector-based login so the crawler can reach authenticated screens.
+
+    Deterministic on purpose: the user supplies the login URL + field selectors
+    and credentials. The crawler fills them once, saves the Playwright
+    `storageState`, and reuses that session for every subsequent screen. No
+    per-page auth guessing — see the design doc's confidence section.
+    """
+
+    login_url: str = Field(..., description="absolute URL of the login page")
+    username: str = Field(..., repr=False)
+    password: str = Field(..., repr=False)
+    username_selector: str = Field(default="input[type=email], input[name=username]")
+    password_selector: str = Field(default="input[type=password]")
+    submit_selector: str = Field(default="button[type=submit]")
+    # A path/substring that, when present in the URL, means "still logged out".
+    logged_out_marker: str = Field(default="/login")
+
+
+class RouteSpec(BaseModel):
+    """One route the user wants captured, with its auth requirement.
+
+    `authenticated=True` routes are visited in a logged-in browser context
+    (the crawler logs in once via `LoginConfig` and reuses that session's
+    cookies/headers); `False` routes are visited anonymously.
+    """
+
+    path: str = Field(..., description="relative path or absolute URL")
+    authenticated: bool = False
+
+
+class CrawlRequest(BaseModel):
+    """Crawl an explicit list of routes of a live application.
+
+    No autonomous discovery: the user supplies the exact routes, so the browser
+    only navigates each one, captures it, and infers the screen-relationship
+    graph from links between the captured routes.
+    """
+
+    base_url: str = Field(..., description="e.g. https://app.example.com")
+    routes: list[RouteSpec] = Field(default_factory=list)
+    login: LoginConfig | None = None
+
+
+class InteractiveElement(BaseModel):
+    kind: str = ""  # link | button | input | select | form
+    role: str = ""
+    text: str = ""
+    selector: str = ""
+    href: str = ""
+
+
+class ScreenInfo(BaseModel):
+    screen_id: str
+    url: str
+    title: str = ""
+    depth: int = 0
+    discovered_from: str | None = None
+    authenticated: bool = False
+    interactive_count: int = 0
+    # Relative paths under the run's artifact dir (local copy).
+    dom_path: str = ""
+    screenshot_path: str = ""
+    a11y_path: str = ""
+    # Public URL of the screenshot in Supabase Storage (or a data: URI fallback
+    # when storage isn't configured, so the frontend can still render it).
+    screenshot_url: str = ""
+    # Full captured artifacts inlined for persistence into Postgres.
+    dom: str = ""
+    a11y: str = ""
+    elements: list[InteractiveElement] = []
+    # Deterministically pruned semantic DOM tree (landmarks/headings/controls
+    # only — no scripts/styles/wrappers). This is what we send the LLM, not raw
+    # HTML. Each node: {tag, role?, name?, attrs?, children?}.
+    structured_dom: list[Any] = []
+    # LLM semantic read of the screen (skipped if no key). Derived from the
+    # structured tree + the screen's relationships, not from raw DOM.
+    label: str = ""
+    purpose: str = ""
+    primary_actions: list[str] = []
+    key_components: list[str] = []
+
+
+class Transition(BaseModel):
+    from_screen: str
+    to_screen: str
+    action: str = "navigate"  # navigate | click
+    element_text: str = ""
+    selector: str = ""
+
+
+class CrawlResult(BaseModel):
+    run_id: str
+    base_url: str
+    artifact_dir: str = ""
+    screen_count: int = 0
+    screens: list[ScreenInfo] = []
+    transitions: list[Transition] = []
+
+
+# --- Ingest layer (Requirements / "what was intended") -----------------------
+class IngestRequest(BaseModel):
+    """Parse a public PRD/README/spec into structured requirements."""
+
+    source_type: str = Field(
+        default="url", description="url | text | github_readme"
+    )
+    # For url: the doc URL. For text: the raw markdown. For github_readme: owner/repo.
+    source: str
+    token: str = Field(default="", repr=False, description="GitHub token if private")
+
+
+class Requirement(BaseModel):
+    req_id: str
+    title: str
+    user_action: str = ""
+    expected_outcome: str = ""
+    priority: str = "medium"
+    source_anchor: str = Field(default="", description="heading/section it came from")
+
+
+class IngestResult(BaseModel):
+    source: str
+    source_type: str = ""
+    requirement_count: int = 0
+    requirements: list[Requirement] = []
+    excerpt: str = ""
+
+
 class JobState(str, Enum):
     pending = "pending"
     running = "running"
@@ -136,6 +267,9 @@ class JobStatus(BaseModel):
     message: str = ""
     error: str | None = None
     result: RepoTree | None = None
+    # Crawl / ingest jobs surface their output here (only one is set per job).
+    crawl_result: CrawlResult | None = None
+    ingest_result: IngestResult | None = None
 
 
 class JobCreated(BaseModel):

@@ -7,7 +7,10 @@ export default defineConfig({
   migrations: {
     path: "prisma/migrations",
   },
+  // CLI-only (migrate/studio). Use the DIRECT session-mode URL — DDL can't run
+  // over Supabase's pgbouncer transaction pooler. The app runtime uses
+  // DATABASE_URL (pooler) via the PrismaPg adapter in lib/prisma.ts.
   datasource: {
-    url: env("DATABASE_URL"),
+    url: env("DIRECT_URL"),
   },
 });
