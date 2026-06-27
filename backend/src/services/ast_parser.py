@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 import warnings
 
-from src.core.tree import extract_symbols
+from src.core.tree import extract_imports, extract_symbols
 from src.models.schemas import FileInfo, RepoTree
 
 
@@ -31,10 +31,15 @@ def parse_file(path: str, source: str) -> FileInfo:
         )
 
     functions, classes = extract_symbols(module)
+    records = extract_imports(module)
+    # Display names: dotted module, with leading dots for relative imports.
+    display = [("." * r.level + r.module) if r.module else "." * r.level for r in records]
     return FileInfo(
         path=path,
         loc=loc,
         parsed=True,
+        imports=display,
+        import_records=records,
         functions=functions,
         classes=classes,
     )

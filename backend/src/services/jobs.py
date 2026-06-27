@@ -21,6 +21,7 @@ from src.models.schemas import JobState, JobStatus
 from src.services.ast_parser import build_tree
 from src.services.describer import describe_tree
 from src.services.github_fetch import download_tarball
+from src.services.graph import build_knowledge_graph
 
 logger = logging.getLogger("jobs")
 
@@ -58,6 +59,7 @@ async def run_job(
     token: str,
     full_name: str,
     ref: str,
+    build_graph: bool = True,
 ) -> None:
     status = store.get(job_id)
     if status is None:
@@ -86,10 +88,31 @@ async def run_job(
         await progress(0.4, "Generating descriptions")
         tree = await describe_tree(tree, fetched.sources, progress)
 
+        # Build the Neo4j Aura knowledge graph from the described tree (only when
+        # requested). A graph failure must not discard the AST/descriptions we
+        # already produced, so it is caught and surfaced as a warning instead.
+        if build_graph:
+            await progress(0.96, "Building Neo4j knowledge graph")
+            try:
+                tree.graph = await build_knowledge_graph(tree)
+                if tree.graph:
+                    logger.info(
+                        "job %s graph ready: %d nodes at %s",
+                        job_id,
+                        tree.graph.nodes_written,
+                        tree.graph.console_url,
+                    )
+            except Exception as exc:  # noqa: BLE001 - graph is best-effort
+                logger.exception("job %s graph step failed: %s", job_id, exc)
+                status.message = f"graph step failed: {exc}"
+
         status.result = tree
         status.state = JobState.done
         status.progress = 1.0
-        status.message = "complete"
+        if status.message.startswith("graph step failed"):
+            pass  # keep the warning visible
+        else:
+            status.message = "complete"
         logger.info("job %s DONE — %s", job_id, tree.summary)
     except Exception as exc:  # noqa: BLE001
         logger.exception("job %s FAILED: %s", job_id, exc)

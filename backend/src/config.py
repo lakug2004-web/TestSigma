@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,18 @@ class Settings(BaseSettings):
 
     # CORS: the Next.js frontend origin allowed to call this service.
     frontend_origin: str = "http://localhost:3000"
+
+    # Neo4j Aura: the knowledge graph of the analysed repo is written here.
+    # All four arrive from the Aura instance dashboard / connection file. If
+    # `neo4j_uri` is empty the graph step is skipped (AST/descriptions still run).
+    neo4j_uri: str = ""
+    neo4j_username: str = ""
+    neo4j_password: str = Field(default="", repr=False)
+    neo4j_database: str = "neo4j"
+    aura_instanceid: str = ""
+    aura_instancename: str = ""
+    # Where the user is sent to browse the graph they just built.
+    neo4j_console_url: str = "https://console.neo4j.io"
 
     # Bounds to keep a single analysis cheap and quick.
     max_python_files: int = 200

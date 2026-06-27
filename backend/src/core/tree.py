@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ast
 
-from src.models.schemas import ClassInfo, FunctionInfo
+from src.models.schemas import ClassInfo, FunctionInfo, ImportInfo
 
 
 def _decorator_name(node: ast.expr) -> str:
@@ -34,6 +34,27 @@ def _base_name(node: ast.expr) -> str:
         return getattr(node, "id", "<base>")
 
 
+def _called_name(node: ast.Call) -> str | None:
+    """Simple name of a call target: `foo(...)`->foo, `obj.bar(...)`->bar."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _calls(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Distinct call-target names inside a function body (order-preserving)."""
+    seen: dict[str, None] = {}
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            name = _called_name(child)
+            if name:
+                seen.setdefault(name, None)
+    return list(seen)
+
+
 def _func_info(node: ast.FunctionDef | ast.AsyncFunctionDef) -> FunctionInfo:
     args = [a.arg for a in node.args.args]
     if node.args.vararg:
@@ -49,7 +70,30 @@ def _func_info(node: ast.FunctionDef | ast.AsyncFunctionDef) -> FunctionInfo:
         end_lineno=getattr(node, "end_lineno", node.lineno) or node.lineno,
         is_async=isinstance(node, ast.AsyncFunctionDef),
         decorators=[_decorator_name(d) for d in node.decorator_list],
+        calls=_calls(node),
     )
+
+
+def extract_imports(tree: ast.Module) -> list[ImportInfo]:
+    """Structured import statements from a module (top-level only).
+
+    `import a.b.c` -> ImportInfo(module="a.b.c"); `from x import y` ->
+    ImportInfo(module="x", names=["y"]). Relative imports keep their `level`.
+    """
+    records: list[ImportInfo] = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                records.append(ImportInfo(module=alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            records.append(
+                ImportInfo(
+                    module=node.module or "",
+                    names=[a.name for a in node.names],
+                    level=node.level or 0,
+                )
+            )
+    return records
 
 
 def _class_info(node: ast.ClassDef) -> ClassInfo:

@@ -53,6 +53,7 @@ export async function POST(request: NextRequest) {
         repo: body.repo,
         ref: body.ref ?? "",
         token,
+        build_graph: body.build_graph ?? true,
       }),
       cache: "no-store",
     })

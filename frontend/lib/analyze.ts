@@ -9,6 +9,7 @@ export type FunctionInfo = {
   end_lineno: number
   is_async: boolean
   decorators: string[]
+  calls: string[]
   description: string
 }
 
@@ -28,9 +29,27 @@ export type FileInfo = {
   loc: number
   parsed: boolean
   parse_error: string | null
+  imports: string[]
+  import_records?: { module: string; names: string[]; level: number }[]
   functions: FunctionInfo[]
   classes: ClassInfo[]
   description: string
+}
+
+export type GraphQuery = {
+  name: string
+  cypher: string
+}
+
+export type GraphInfo = {
+  console_url: string
+  instance_name: string
+  database: string
+  nodes_written: number
+  relationships_written: number
+  sample_query: string
+  connector_name: string
+  queries: GraphQuery[]
 }
 
 export type RepoTree = {
@@ -40,6 +59,7 @@ export type RepoTree = {
   file_count: number
   python_file_count: number
   files: FileInfo[]
+  graph?: GraphInfo | null
 }
 
 export type JobState = "pending" | "running" | "done" | "error"
@@ -81,12 +101,12 @@ export function treeHasDescriptions(tree: RepoTree): boolean {
  * Pass `refresh` to bypass the cache and force regeneration.
  */
 export async function startAnalysis(
-  args: StartArgs & { refresh?: boolean },
+  args: StartArgs & { refresh?: boolean; buildGraph?: boolean },
 ): Promise<StartResult> {
   const res = await fetch(`/api/analyze${args.refresh ? "?refresh=1" : ""}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(args),
+    body: JSON.stringify({ ...args, build_graph: args.buildGraph ?? false }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
@@ -106,6 +126,26 @@ export async function saveAst(fullName: string, tree: RepoTree): Promise<void> {
   }).catch(() => {
     /* caching is best-effort; ignore failures */
   })
+}
+
+/**
+ * Build the Neo4j knowledge graph from an already-generated tree (no refetch /
+ * LLM). Returns where to view it in the Aura console.
+ */
+export async function buildGraph(
+  fullName: string,
+  tree: RepoTree,
+): Promise<GraphInfo> {
+  const res = await fetch("/api/analyze/graph", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name: fullName, tree }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error ?? `Failed to build graph (${res.status})`)
+  }
+  return (await res.json()) as GraphInfo
 }
 
 /** Fetch a job's current status. */

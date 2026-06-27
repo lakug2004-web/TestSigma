@@ -8,13 +8,19 @@ import {
   GlobeIcon,
   NetworkIcon,
   Loader2Icon,
+  DatabaseIcon,
+  LayersIcon,
+  ExternalLinkIcon,
+  CopyIcon,
+  CheckIcon,
 } from "lucide-react"
 import type { GitHubRepo, RepoStats } from "@/lib/github"
-import type { RepoTree } from "@/lib/analyze"
+import type { RepoTree, GraphInfo } from "@/lib/analyze"
 import {
   startAnalysis,
   pollUntilDone,
   saveAst,
+  buildGraph,
   treeHasDescriptions,
 } from "@/lib/analyze"
 import {
@@ -61,7 +67,15 @@ export function RepoStatsDialog({
   const [astOpen, setAstOpen] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
-  // Reset AST state whenever a different repo is opened.
+  // Knowledge-graph state.
+  const [graphState, setGraphState] = useState<
+    "idle" | "running" | "done" | "error"
+  >("idle")
+  const [graphInfo, setGraphInfo] = useState<GraphInfo | null>(null)
+  const [graphError, setGraphError] = useState<string | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
+
+  // Reset AST + graph state whenever a different repo is opened.
   useEffect(() => {
     abortRef.current?.abort()
     abortRef.current = null
@@ -71,13 +85,23 @@ export function RepoStatsDialog({
     setAstError(null)
     setTree(null)
     setAstOpen(false)
+    setGraphState("idle")
+    setGraphInfo(null)
+    setGraphError(null)
+    setCopied(null)
   }, [repo])
 
   // Abort any in-flight poll on unmount.
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  async function runAst() {
-    if (!repo) return
+  /**
+   * Produce a RepoTree for the active repo: serve the cached AST when it has
+   * descriptions, otherwise run a backend job and poll it. `buildGraphInline`
+   * asks the backend to also write the Neo4j graph as part of the same job.
+   * Returns the tree, or null on failure (state is set accordingly).
+   */
+  async function runAnalysis(buildGraphInline: boolean): Promise<RepoTree | null> {
+    if (!repo) return null
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -85,56 +109,94 @@ export function RepoStatsDialog({
     setAstError(null)
     setAstProgress(0)
     setAstMessage("Starting…")
-    setTree(null)
-    setAstOpen(true) // open immediately so the loader is visible
     try {
       let start = await startAnalysis({
         full_name: repo.full_name,
         owner: repo.owner,
         repo: repo.name,
+        buildGraph: buildGraphInline,
       })
 
       // Cache hit — serve the stored AST only if it actually has descriptions.
       // A previously failed run (e.g. bad model) cached an empty tree; regenerate.
-      if (start.cached) {
-        if (treeHasDescriptions(start.tree)) {
-          setTree(start.tree)
-          setAstState("done")
-          setAstMessage("Loaded from cache")
-          return
-        }
+      if (start.cached && !treeHasDescriptions(start.tree)) {
         start = await startAnalysis({
           full_name: repo.full_name,
           owner: repo.owner,
           repo: repo.name,
+          buildGraph: buildGraphInline,
           refresh: true,
         })
       }
 
+      let result: RepoTree
       if (start.cached) {
-        // refresh somehow returned cache again; just use it
-        setTree(start.tree)
-        setAstState("done")
-        return
+        result = start.tree
+        setAstMessage("Loaded from cache")
+      } else {
+        result = await pollUntilDone(
+          start.jobId,
+          (s) => {
+            setAstProgress(Math.round(s.progress * 100))
+            setAstMessage(s.message)
+          },
+          controller.signal,
+        )
+        // Persist only when descriptions succeeded, so failures aren't cached.
+        if (treeHasDescriptions(result)) void saveAst(repo.full_name, result)
       }
 
-      const result = await pollUntilDone(
-        start.jobId,
-        (s) => {
-          setAstProgress(Math.round(s.progress * 100))
-          setAstMessage(s.message)
-        },
-        controller.signal,
-      )
       setTree(result)
       setAstState("done")
-      // Persist only when descriptions succeeded, so failures aren't cached.
-      if (treeHasDescriptions(result)) void saveAst(repo.full_name, result)
+      return result
     } catch (err) {
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return null
       setAstError(err instanceof Error ? err.message : "Analysis failed")
       setAstState("error")
+      return null
     }
+  }
+
+  // Action 1: AST only (no Neo4j write). Opens the AST view.
+  async function generateAst() {
+    setAstOpen(true)
+    await runAnalysis(false)
+  }
+
+  // Build the Neo4j graph from a tree, then show the result panel.
+  async function graphFromTree(t: RepoTree) {
+    if (!repo) return
+    setGraphState("running")
+    setGraphError(null)
+    setGraphInfo(null)
+    try {
+      const info = await buildGraph(repo.full_name, t)
+      setGraphInfo(info)
+      setGraphState("done")
+    } catch (err) {
+      setGraphError(err instanceof Error ? err.message : "Graph build failed")
+      setGraphState("error")
+    }
+  }
+
+  // Action 2: knowledge graph. Reuses the existing tree when present (cheap —
+  // no refetch/LLM); otherwise builds the AST first, then the graph.
+  async function generateGraph() {
+    const t = tree ?? (await runAnalysis(false))
+    if (t) await graphFromTree(t)
+  }
+
+  // Action 3: build both — AST view + knowledge graph.
+  async function buildAll() {
+    setAstOpen(true)
+    const t = tree ?? (await runAnalysis(false))
+    if (t) await graphFromTree(t)
+  }
+
+  function copyQuery(name: string, cypher: string) {
+    void navigator.clipboard.writeText(cypher)
+    setCopied(name)
+    setTimeout(() => setCopied(null), 1500)
   }
 
   useEffect(() => {
@@ -250,42 +312,53 @@ export function RepoStatsDialog({
             </div>
 
             <div className="border-t border-border pt-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-medium">Abstract Syntax Tree</h4>
-                  <p className="text-xs text-muted-foreground">
-                    Parse the codebase and describe every file, class &amp;
-                    function.
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  {tree ? (
+              <h4 className="text-sm font-medium">Code intelligence</h4>
+              <p className="text-xs text-muted-foreground">
+                Parse the codebase into an AST and mirror it into a Neo4j
+                knowledge graph.
+              </p>
+
+              {(() => {
+                const busy = astState === "running" || graphState === "running"
+                return (
+                  <div className="mt-3 grid grid-cols-3 gap-2">
                     <Button
                       size="sm"
-                      variant={astState === "done" ? "default" : "secondary"}
-                      onClick={() => setAstOpen(true)}
+                      variant="secondary"
+                      onClick={generateAst}
+                      disabled={busy}
                     >
-                      <NetworkIcon className="size-4" />
-                      View AST
-                    </Button>
-                  ) : null}
-                  {astState !== "done" ? (
-                    <Button
-                      size="sm"
-                      variant={tree ? "ghost" : "default"}
-                      onClick={runAst}
-                      disabled={astState === "running"}
-                    >
-                      {astState === "running" ? (
+                      {astState === "running" && graphState !== "running" ? (
                         <Loader2Icon className="size-4 animate-spin" />
                       ) : (
                         <NetworkIcon className="size-4" />
                       )}
-                      {astState === "running" ? "Streaming…" : "Generate AST"}
+                      AST
                     </Button>
-                  ) : null}
-                </div>
-              </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={generateGraph}
+                      disabled={busy}
+                    >
+                      {graphState === "running" ? (
+                        <Loader2Icon className="size-4 animate-spin" />
+                      ) : (
+                        <DatabaseIcon className="size-4" />
+                      )}
+                      Graph
+                    </Button>
+                    <Button size="sm" onClick={buildAll} disabled={busy}>
+                      {busy ? (
+                        <Loader2Icon className="size-4 animate-spin" />
+                      ) : (
+                        <LayersIcon className="size-4" />
+                      )}
+                      Build all
+                    </Button>
+                  </div>
+                )
+              })()}
 
               {astState === "running" ? (
                 <div className="mt-3 space-y-1.5">
@@ -298,6 +371,89 @@ export function RepoStatsDialog({
 
               {astState === "error" ? (
                 <p className="mt-3 text-xs text-destructive">{astError}</p>
+              ) : null}
+
+              {tree && astState === "done" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3 w-full"
+                  onClick={() => setAstOpen(true)}
+                >
+                  <NetworkIcon className="size-4" />
+                  View AST graph
+                </Button>
+              ) : null}
+
+              {graphState === "error" ? (
+                <p className="mt-3 text-xs text-destructive">{graphError}</p>
+              ) : null}
+
+              {graphState === "done" && graphInfo ? (
+                <div className="mt-3 space-y-3 rounded-lg border border-brand/30 bg-brand/5 p-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <DatabaseIcon className="size-4 text-brand" />
+                      Connector ·{" "}
+                      <span className="font-mono">
+                        {graphInfo.connector_name}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      This codebase&apos;s own isolated subgraph. Paste a query
+                      below into the Neo4j console&apos;s Query tab.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Badge variant="secondary">
+                      {graphInfo.nodes_written} nodes
+                    </Badge>
+                    <Badge variant="secondary">
+                      {graphInfo.relationships_written} relationships
+                    </Badge>
+                    {graphInfo.instance_name ? (
+                      <Badge variant="outline">{graphInfo.instance_name}</Badge>
+                    ) : null}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {graphInfo.queries.map((q) => (
+                      <div key={q.name} className="rounded-md bg-muted/60 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-medium">
+                            {q.name}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => copyQuery(q.name, q.cypher)}
+                            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            {copied === q.name ? (
+                              <CheckIcon className="size-3" />
+                            ) : (
+                              <CopyIcon className="size-3" />
+                            )}
+                            {copied === q.name ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                        <code className="mt-1 block break-all font-mono text-[11px] leading-relaxed text-muted-foreground">
+                          {q.cypher}
+                        </code>
+                      </div>
+                    ))}
+                  </div>
+
+                  <a
+                    href={graphInfo.console_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-brand px-3 py-2 text-sm font-medium text-brand-foreground transition-opacity hover:opacity-90"
+                  >
+                    <ExternalLinkIcon className="size-4" />
+                    Open Neo4j console
+                  </a>
+                </div>
               ) : null}
             </div>
           </div>
