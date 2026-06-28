@@ -73,3 +73,57 @@ async def download_tarball(token: str, full_name: str, ref: str) -> FetchResult:
                 fh.close()
 
     return FetchResult(sources=sources, total_file_count=total_file_count)
+
+
+async def download_doc_files(
+    token: str,
+    full_name: str,
+    ref: str,
+    exts: tuple[str, ...] = (".md", ".vdk"),
+) -> dict[str, str]:
+    """Download a repo tarball and return the text of every doc file.
+
+    Used by the ingest layer to pull the spec straight from the codebase: every
+    file whose name ends in one of `exts` (markdown / .vdk specs by default) is
+    decoded and returned keyed by its repo-relative path. Same in-memory-only
+    token handling as `download_tarball`.
+    """
+    settings = get_settings()
+    ref_path = f"/{ref}" if ref else ""
+    url = f"{GH_API}/repos/{full_name}/tarball{ref_path}"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "pullguard-ingest",
+    }
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"GitHub tarball fetch failed ({resp.status_code}) for {full_name}"
+            )
+        data = resp.content
+
+    docs: dict[str, str] = {}
+    lower_exts = tuple(e.lower() for e in exts)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            rel = _strip_root(member.name)
+            if not rel.lower().endswith(lower_exts):
+                continue
+            if member.size > settings.max_file_bytes:
+                continue
+            fh = tar.extractfile(member)
+            if fh is None:
+                continue
+            try:
+                docs[rel] = fh.read().decode("utf-8", errors="replace")
+            finally:
+                fh.close()
+
+    return docs

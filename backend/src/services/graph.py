@@ -54,11 +54,13 @@ DETACH DELETE n
 # the nodes too, so the data survives even if a later edge pass is skipped.
 _INGEST = """
 MERGE (r:Repo {full_name: $full_name})
-SET r.ref = $ref, r.summary = $summary
+SET r.ref = $ref, r.summary = $summary,
+    r.name = $full_name, r.description = $summary
 WITH r
 UNWIND $files AS f
   MERGE (file:File {key: f.key})
   SET file.path = f.path,
+      file.name = f.path,
       file.loc = f.loc,
       file.parsed = f.parsed,
       file.description = f.description,
@@ -357,6 +359,15 @@ def _connector_queries(full_name: str, prefix: str) -> list[GraphQuery]:
             cypher=(
                 f'MATCH (r:Repo {{full_name: "{full_name}"}})-[:CONTAINS]->(file)'
                 "-[:DEFINES]->(s) RETURN r, file, s LIMIT 300"
+            ),
+        ),
+        GraphQuery(
+            name="Read descriptions (table)",
+            cypher=(
+                f'MATCH (n) WHERE n.key STARTS WITH "{prefix}" '
+                'AND coalesce(n.description, "") <> "" '
+                'RETURN n.name AS name, head(labels(n)) AS kind, '
+                'n.description AS description ORDER BY kind, name'
             ),
         ),
         GraphQuery(

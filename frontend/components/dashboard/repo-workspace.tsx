@@ -11,18 +11,15 @@ import {
   ExternalLinkIcon,
   GitPullRequestIcon,
   GitCommitHorizontalIcon,
-  LayersIcon,
 } from "lucide-react"
 import type { GitHubRepo, RepoStats } from "@/lib/github"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PrList } from "@/components/dashboard/pr-list"
-import { RepoStatsDialog } from "@/components/dashboard/repo-stats-dialog"
+import { RepoTools } from "@/components/dashboard/repo-tools"
 
 export function RepoWorkspace({ repo }: { repo: GitHubRepo }) {
   const [stats, setStats] = useState<RepoStats | null>(null)
-  const [toolsOpen, setToolsOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -94,11 +91,6 @@ export function RepoWorkspace({ repo }: { repo: GitHubRepo }) {
               </a>
             </div>
           </div>
-
-          <Button onClick={() => setToolsOpen(true)} variant="secondary">
-            <LayersIcon className="size-4" />
-            Analysis tools
-          </Button>
         </div>
       </div>
 
@@ -118,6 +110,19 @@ export function RepoWorkspace({ repo }: { repo: GitHubRepo }) {
       <section className="space-y-4">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">
+            Analysis tools
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Build the knowledge graph, ingest the codebase docs, and crawl the
+            live app — all inline, right here on the repository.
+          </p>
+        </div>
+        <RepoTools repo={repo} />
+      </section>
+
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">
             Pull requests
           </h2>
           <p className="text-sm text-muted-foreground">
@@ -127,13 +132,6 @@ export function RepoWorkspace({ repo }: { repo: GitHubRepo }) {
         </div>
         <PrList repo={repo} />
       </section>
-
-      {/* Deep code-intelligence + crawl tools reuse the existing dialog. */}
-      <RepoStatsDialog
-        repo={toolsOpen ? repo : null}
-        open={toolsOpen}
-        onOpenChange={setToolsOpen}
-      />
     </div>
   )
 }

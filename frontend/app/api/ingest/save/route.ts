@@ -30,6 +30,8 @@ export async function POST(request: NextRequest) {
     sourceType: result.source_type ?? "url",
     requirementCount: result.requirement_count ?? result.requirements.length,
     requirements: result.requirements,
+    files: result.files ?? [],
+    overview: result.overview ?? "",
     excerpt: result.excerpt ?? "",
   }
 

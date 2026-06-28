@@ -6,6 +6,35 @@ import { prisma } from "@/lib/prisma"
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000"
 
+// Read-only: return this user+repo's persisted requirements (or null). Lets the
+// dashboard restore the last ingest on revisit without re-running the job.
+export async function GET(request: NextRequest) {
+  const fullName = new URL(request.url).searchParams.get("full_name")
+  if (!fullName) {
+    return NextResponse.json({ error: "full_name is required" }, { status: 400 })
+  }
+  const session = await auth.api.getSession({ headers: await headers() })
+  if (!session) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 })
+  }
+  const cached = await prisma.repoRequirements.findUnique({
+    where: { userId_fullName: { userId: session.user.id, fullName } },
+  })
+  if (!cached) return NextResponse.json({ result: null })
+  return NextResponse.json({
+    result: {
+      source: cached.source,
+      source_type: cached.sourceType,
+      requirement_count: cached.requirementCount,
+      requirements: cached.requirements,
+      files: cached.files,
+      overview: cached.overview,
+      excerpt: cached.excerpt,
+    },
+    updatedAt: cached.updatedAt,
+  })
+}
+
 // Start a requirements-ingest job, OR return previously ingested requirements
 // for this user+repo. The backend parses a PRD/README/spec into structured
 // requirements (the "Requirements" layer of the knowledge graph).
@@ -37,6 +66,8 @@ export async function POST(request: NextRequest) {
           source_type: cached.sourceType,
           requirement_count: cached.requirementCount,
           requirements: cached.requirements,
+          files: cached.files,
+          overview: cached.overview,
           excerpt: cached.excerpt,
         },
         updatedAt: cached.updatedAt,

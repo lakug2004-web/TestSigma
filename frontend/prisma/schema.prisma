@@ -131,6 +131,10 @@ model RepoRequirements {
   requirementCount Int      @default(0)
   // Structured requirements: [{ req_id, title, user_action, expected_outcome, priority, source_anchor }].
   requirements     Json     @default("[]")
+  // Repo-relative paths of the doc files ingested (github_repo source).
+  files            Json     @default("[]")
+  // Deep, whole-codebase description synthesised from all ingested docs.
+  overview         String   @default("")
   excerpt          String   @default("")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

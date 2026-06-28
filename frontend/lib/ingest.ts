@@ -7,9 +7,10 @@ import { fetchStatus } from "@/lib/analyze"
 export type Requirement = {
   req_id: string
   title: string
+  description?: string
   user_action: string
   expected_outcome: string
-  priority: string
+  priority?: string
   source_anchor: string
 }
 
@@ -18,13 +19,15 @@ export type IngestResult = {
   source_type: string
   requirement_count: number
   requirements: Requirement[]
+  overview?: string
   excerpt: string
+  files?: string[]
 }
 
 export type StartIngestArgs = {
   full_name: string
   source: string
-  source_type?: "url" | "text" | "github_readme"
+  source_type?: "url" | "text" | "github_readme" | "github_repo"
   refresh?: boolean
 }
 
@@ -48,6 +51,18 @@ export async function startIngest(
   const data = await res.json()
   if (data.cached) return { cached: true, result: data.result as IngestResult }
   return { cached: false, jobId: data.job_id as string }
+}
+
+/** Load this user+repo's persisted requirements (or null) without re-running. */
+export async function fetchRequirements(
+  fullName: string,
+): Promise<IngestResult | null> {
+  const res = await fetch(
+    `/api/ingest?full_name=${encodeURIComponent(fullName)}`,
+  )
+  if (!res.ok) return null
+  const data = await res.json()
+  return (data.result as IngestResult | null) ?? null
 }
 
 /** Persist ingested requirements so subsequent opens / the reviewer can use them. */

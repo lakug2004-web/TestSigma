@@ -229,9 +229,10 @@ class IngestRequest(BaseModel):
     """Parse a public PRD/README/spec into structured requirements."""
 
     source_type: str = Field(
-        default="url", description="url | text | github_readme"
+        default="url", description="url | text | github_readme | github_repo"
     )
-    # For url: the doc URL. For text: the raw markdown. For github_readme: owner/repo.
+    # For url: the doc URL. For text: the raw markdown. For github_readme/github_repo:
+    # owner/repo (github_repo pulls every .md/.vdk file straight from the codebase).
     source: str
     token: str = Field(default="", repr=False, description="GitHub token if private")
 
@@ -239,9 +240,12 @@ class IngestRequest(BaseModel):
 class Requirement(BaseModel):
     req_id: str
     title: str
+    # Deep, multi-sentence explanation of the requirement (LLM-generated).
+    description: str = ""
     user_action: str = ""
     expected_outcome: str = ""
-    priority: str = "medium"
+    # Kept for back-compat with the graph layer; no longer surfaced in the UI.
+    priority: str = ""
     source_anchor: str = Field(default="", description="heading/section it came from")
 
 
@@ -250,7 +254,13 @@ class IngestResult(BaseModel):
     source_type: str = ""
     requirement_count: int = 0
     requirements: list[Requirement] = []
+    # Deep, multi-paragraph LLM description of the whole codebase / product,
+    # synthesised from every ingested doc — what it does, its features, modules,
+    # data model and user flows.
+    overview: str = ""
     excerpt: str = ""
+    # Repo-relative paths of the doc files ingested (github_repo source only).
+    files: list[str] = []
 
 
 class JobState(str, Enum):
