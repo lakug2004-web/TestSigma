@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "neo4j>=5.26",
     "browser-use-sdk>=3.8.4",
+    "pyjwt[crypto]>=2.10",
 ]
 
 [build-system]

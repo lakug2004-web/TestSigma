@@ -116,6 +116,66 @@ model CrawlRun {
   @@map("crawl_run")
 }
 
+// ---------------------------------------------------------------------------
+// Ingested product spec (PRD / README / wiki) parsed into structured
+// requirements — the "Requirements" layer of the knowledge graph. One row per
+// user + repo + source document; `requirements` is the structured list JSON.
+// ---------------------------------------------------------------------------
+
+model RepoRequirements {
+  id               String   @id @default(cuid())
+  userId           String
+  fullName         String // GitHub repo these requirements describe (owner/repo)
+  source           String // the doc URL / owner-repo / "text"
+  sourceType       String   @default("url") // url | text | github_readme
+  requirementCount Int      @default(0)
+  // Structured requirements: [{ req_id, title, user_action, expected_outcome, priority, source_anchor }].
+  requirements     Json     @default("[]")
+  excerpt          String   @default("")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([userId, fullName])
+  @@index([fullName])
+  @@map("repo_requirements")
+}
+
+// ---------------------------------------------------------------------------
+// One row per pull request seen for a repo: GitHub metadata (always) plus the
+// latest blast-radius review (filled once the Reason layer runs). The webhook
+// reasoner upserts the review fields; the dashboard upserts the metadata when it
+// lists PRs. Unique on (fullName, prNumber) so both writers converge on one row.
+// ---------------------------------------------------------------------------
+
+model PrReview {
+  id          String    @id @default(cuid())
+  userId      String? // set when persisted via the dashboard; null from webhook
+  fullName    String // owner/repo
+  prNumber    Int
+  title       String    @default("")
+  author      String    @default("")
+  state       String    @default("open") // open | closed | merged
+  url         String    @default("")
+  headSha     String    @default("")
+  baseRef     String    @default("")
+  headRef     String    @default("")
+  reviewed    Boolean   @default(false)
+  verdict     String    @default("") // approve | request_changes | comment
+  risk        String    @default("") // low | medium | high
+  goodEnough  Boolean   @default(false)
+  summary     String    @default("")
+  // Full structured blast radius: { changes_made, ui_at_risk, flows_affected,
+  // requirements_at_risk, issues_addressed, suggestions }.
+  blastRadius Json      @default("{}")
+  reviewedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([fullName, prNumber])
+  @@index([fullName])
+  @@map("pr_review")
+}
+
 model CrawlScreen {
   id              String   @id @default(cuid())
   runId           String

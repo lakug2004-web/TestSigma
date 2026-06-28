@@ -9,9 +9,9 @@ browsing, screenshotting, and summarizing.
 We keep two small deterministic pieces:
   * the screen-relationship graph, inferred from the links browser-use returns
     (an edge A->B when a link on A points at another captured route B);
-  * persisting the screenshot — browser-use screenshot URLs are presigned and
-    expire in ~5 min, so we download the final screenshot and re-store it via
-    `store_screenshot` (Supabase Storage, or a data: URI fallback).
+  * encoding the screenshot — browser-use screenshot URLs are presigned and
+    expire in ~5 min, so we download the final screenshot and hand it back as a
+    `data:` URI via `store_screenshot`; the frontend owns persistence.
 """
 
 from __future__ import annotations

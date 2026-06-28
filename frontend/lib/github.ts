@@ -39,6 +39,63 @@ export type RepoStats = {
   languages: { name: string; percent: number }[];
 };
 
+export type GitHubPull = {
+  number: number;
+  title: string;
+  state: "open" | "closed" | "merged";
+  author: string;
+  html_url: string;
+  body: string | null;
+  headRef: string;
+  baseRef: string;
+  headSha: string;
+  draft: boolean;
+  comments: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// PR detail adds the diff-size fields the list endpoint omits.
+export type GitHubPullDetail = GitHubPull & {
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  commits: number;
+  mergeable_state: string;
+};
+
+function mapPull(p: {
+  number: number;
+  title: string;
+  state: string;
+  merged_at: string | null;
+  user: { login: string } | null;
+  html_url: string;
+  body: string | null;
+  head: { ref: string; sha: string };
+  base: { ref: string };
+  draft?: boolean;
+  comments?: number;
+  created_at: string;
+  updated_at: string;
+}): GitHubPull {
+  return {
+    number: p.number,
+    title: p.title,
+    state: p.merged_at ? "merged" : (p.state as "open" | "closed"),
+    author: p.user?.login ?? "",
+    html_url: p.html_url,
+    body: p.body,
+    headRef: p.head?.ref ?? "",
+    baseRef: p.base?.ref ?? "",
+    headSha: p.head?.sha ?? "",
+    draft: p.draft ?? false,
+    comments: p.comments ?? 0,
+    createdAt: p.created_at,
+    updatedAt: p.updated_at,
+  };
+}
+
 /**
  * Resolve the signed-in user's GitHub access token. Better Auth handles
  * refreshing/decrypting it from the `account` table for us.
@@ -90,6 +147,53 @@ export async function getRepos(token: string): Promise<GitHubRepo[]> {
   const raw: Array<GitHubRepo & { owner: { login: string } }> =
     await res.json();
   return raw.map((r) => ({ ...r, owner: r.owner.login }));
+}
+
+/** Single repository's metadata (used by the repo detail page). */
+export async function getRepo(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<GitHubRepo> {
+  const res = await ghFetch(token, `/repos/${owner}/${repo}`);
+  if (!res.ok) throw new Error(`GitHub /repos/${owner}/${repo} failed: ${res.status}`);
+  const r: GitHubRepo & { owner: { login: string } } = await res.json();
+  return { ...r, owner: r.owner.login };
+}
+
+/** All pull requests (open + closed + merged) for a repo, newest first. */
+export async function getPullRequests(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<GitHubPull[]> {
+  const res = await ghFetch(
+    token,
+    `/repos/${owner}/${repo}/pulls?state=all&per_page=100&sort=updated&direction=desc`,
+  );
+  if (!res.ok) throw new Error(`GitHub /pulls failed: ${res.status}`);
+  const raw: Parameters<typeof mapPull>[0][] = await res.json();
+  return raw.map(mapPull);
+}
+
+/** One PR with its diff-size stats (additions/deletions/changed files). */
+export async function getPullDetail(
+  token: string,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<GitHubPullDetail> {
+  const res = await ghFetch(token, `/repos/${owner}/${repo}/pulls/${number}`);
+  if (!res.ok) throw new Error(`GitHub /pulls/${number} failed: ${res.status}`);
+  const p = await res.json();
+  return {
+    ...mapPull(p),
+    additions: p.additions ?? 0,
+    deletions: p.deletions ?? 0,
+    changed_files: p.changed_files ?? 0,
+    commits: p.commits ?? 0,
+    mergeable_state: p.mergeable_state ?? "unknown",
+  };
 }
 
 /** Total contributions in the last year via the GraphQL contributions graph. */

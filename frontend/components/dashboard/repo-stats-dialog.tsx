@@ -16,6 +16,8 @@ import {
   CompassIcon,
   PlusIcon,
   Trash2Icon,
+  FileTextIcon,
+  ShieldAlertIcon,
 } from "lucide-react"
 import type { GitHubRepo, RepoStats } from "@/lib/github"
 import type { RepoTree, GraphInfo } from "@/lib/analyze"
@@ -38,6 +40,13 @@ import {
   saveCrawl,
   fetchCrawls,
 } from "@/lib/crawl"
+import type { IngestResult, LayerCoverage } from "@/lib/ingest"
+import {
+  startIngest,
+  pollIngestUntilDone,
+  saveRequirements,
+  connectLayers,
+} from "@/lib/ingest"
 import { Input } from "@/components/ui/input"
 import {
   Dialog,
@@ -123,6 +132,22 @@ export function RepoStatsDialog({
     { ok: boolean; error?: string } | null
   >(null)
 
+  // Ingest (Requirements layer) + 3-layer connect state.
+  const [specSource, setSpecSource] = useState("")
+  const [specType, setSpecType] = useState<"url" | "github_readme">("url")
+  const [ingestState, setIngestState] = useState<
+    "idle" | "running" | "done" | "error"
+  >("idle")
+  const [ingestMessage, setIngestMessage] = useState("")
+  const [ingestError, setIngestError] = useState<string | null>(null)
+  const [requirements, setRequirements] = useState<IngestResult | null>(null)
+  const ingestAbortRef = useRef<AbortController | null>(null)
+  const [connectState, setConnectState] = useState<
+    "idle" | "running" | "done" | "error"
+  >("idle")
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [coverage, setCoverage] = useState<LayerCoverage | null>(null)
+
   // Reset AST + graph state whenever a different repo is opened.
   useEffect(() => {
     abortRef.current?.abort()
@@ -153,6 +178,17 @@ export function RepoStatsDialog({
     setSelectedScreen(null)
     setSavedCrawls([])
     setCrawlSaved(null)
+    ingestAbortRef.current?.abort()
+    ingestAbortRef.current = null
+    setSpecSource("")
+    setSpecType("url")
+    setIngestState("idle")
+    setIngestMessage("")
+    setIngestError(null)
+    setRequirements(null)
+    setConnectState("idle")
+    setConnectError(null)
+    setCoverage(null)
   }, [repo])
 
   // Load this repo's saved crawls when the popup opens. The most recent run is
@@ -361,6 +397,71 @@ export function RepoStatsDialog({
     setAstOpen(true)
     const t = tree ?? (await runAnalysis(false))
     if (t) await graphFromTree(t)
+  }
+
+  // Ingest a product spec (PRD / README / wiki) into structured requirements —
+  // the Requirements layer — and persist them for the graph + PR reasoning.
+  async function runIngest() {
+    if (!repo) return
+    const source = specSource.trim()
+    if (!source) {
+      setIngestError("Enter a spec URL or owner/repo")
+      setIngestState("error")
+      return
+    }
+    ingestAbortRef.current?.abort()
+    const controller = new AbortController()
+    ingestAbortRef.current = controller
+    setIngestState("running")
+    setIngestError(null)
+    setRequirements(null)
+    setIngestMessage("Parsing spec…")
+    try {
+      const start = await startIngest({
+        full_name: repo.full_name,
+        source,
+        source_type: specType,
+      })
+      let result: IngestResult
+      if (start.cached) {
+        result = start.result
+        setIngestMessage("Loaded from cache")
+      } else {
+        result = await pollIngestUntilDone(
+          start.jobId,
+          (message) => setIngestMessage(message),
+          controller.signal,
+        )
+        await saveRequirements(repo.full_name, result)
+      }
+      setRequirements(result)
+      setIngestState("done")
+    } catch (err) {
+      if (controller.signal.aborted) return
+      setIngestError(err instanceof Error ? err.message : "Ingest failed")
+      setIngestState("error")
+    }
+  }
+
+  // Connect Requirements + DOM/UI + Code in Neo4j and report coverage/absence.
+  async function runConnect() {
+    if (!repo) return
+    setConnectState("running")
+    setConnectError(null)
+    setCoverage(null)
+    try {
+      const cov = await connectLayers(repo.full_name)
+      if (cov.skipped) {
+        setConnectError(cov.skipped)
+        setConnectState("error")
+        return
+      }
+      setCoverage(cov)
+      setConnectState("done")
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : "Connect failed")
+      setConnectState("error")
+    }
   }
 
   function copyQuery(name: string, cypher: string) {
@@ -625,6 +726,137 @@ export function RepoStatsDialog({
                   </a>
                 </div>
               ) : null}
+
+              {/* Requirements layer: ingest a product spec into structured
+                  requirements, then connect all three graph layers. */}
+              <div className="mt-4 border-t border-border pt-4">
+                <h4 className="text-sm font-medium">Product spec &amp; layers</h4>
+                <p className="text-xs text-muted-foreground">
+                  Ingest a PRD / README / wiki into requirements (the
+                  &quot;intended&quot; layer), then connect Requirements + UI +
+                  Code in Neo4j to see coverage and gaps.
+                </p>
+
+                <div className="mt-3 flex gap-2">
+                  <select
+                    className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                    value={specType}
+                    onChange={(e) =>
+                      setSpecType(e.target.value as "url" | "github_readme")
+                    }
+                    disabled={ingestState === "running"}
+                  >
+                    <option value="url">URL</option>
+                    <option value="github_readme">README</option>
+                  </select>
+                  <Input
+                    placeholder={
+                      specType === "github_readme"
+                        ? "owner/repo"
+                        : "https://…/spec or PRD URL"
+                    }
+                    value={specSource}
+                    onChange={(e) => setSpecSource(e.target.value)}
+                    disabled={ingestState === "running"}
+                  />
+                </div>
+
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={runIngest}
+                    disabled={ingestState === "running"}
+                  >
+                    {ingestState === "running" ? (
+                      <Loader2Icon className="size-4 animate-spin" />
+                    ) : (
+                      <FileTextIcon className="size-4" />
+                    )}
+                    Ingest spec
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={runConnect}
+                    disabled={connectState === "running"}
+                  >
+                    {connectState === "running" ? (
+                      <Loader2Icon className="size-4 animate-spin" />
+                    ) : (
+                      <LayersIcon className="size-4" />
+                    )}
+                    Connect 3 layers
+                  </Button>
+                </div>
+
+                {ingestState === "running" ? (
+                  <p className="mt-2 truncate text-xs text-muted-foreground">
+                    {ingestMessage}
+                  </p>
+                ) : null}
+                {ingestState === "error" ? (
+                  <p className="mt-2 text-xs text-destructive">{ingestError}</p>
+                ) : null}
+                {ingestState === "done" && requirements ? (
+                  <div className="mt-3 rounded-lg border border-brand/30 bg-brand/5 p-3">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <FileTextIcon className="size-4 text-brand" />
+                      {requirements.requirement_count} requirements
+                    </div>
+                    <ul className="mt-2 space-y-1">
+                      {requirements.requirements.slice(0, 6).map((r) => (
+                        <li
+                          key={r.req_id}
+                          className="truncate text-[11px] text-muted-foreground"
+                        >
+                          <span className="font-mono text-foreground">
+                            {r.req_id}
+                          </span>{" "}
+                          {r.title}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {connectState === "error" ? (
+                  <p className="mt-2 text-xs text-destructive">{connectError}</p>
+                ) : null}
+                {connectState === "done" && coverage ? (
+                  <div className="mt-3 space-y-2 rounded-lg border border-brand/30 bg-brand/5 p-3">
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="secondary">
+                        {coverage.requirements} requirements
+                      </Badge>
+                      <Badge variant="secondary">
+                        {coverage.screens} screens
+                      </Badge>
+                      <Badge variant="outline">
+                        {coverage.covered_by_ui.length} UI-covered
+                      </Badge>
+                    </div>
+                    {coverage.uncovered_requirements.length > 0 ? (
+                      <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2">
+                        <p className="flex items-center gap-1.5 text-[11px] font-medium text-amber-600">
+                          <ShieldAlertIcon className="size-3.5" />
+                          {coverage.uncovered_requirements.length} requirements
+                          with no captured UI (absence)
+                        </p>
+                        <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                          {coverage.uncovered_requirements.join(", ")}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground">
+                        Every requirement maps to a captured screen.
+                      </p>
+                    )}
+                    <code className="block break-all rounded bg-muted/60 p-1.5 font-mono text-[10px] text-muted-foreground">
+                      {coverage.absence_query}
+                    </code>
+                  </div>
+                ) : null}
+              </div>
 
               {/* Live-app crawl: explicit route list with per-route auth. The
                   backend visits each route, captures DOM/screenshot/a11y, and

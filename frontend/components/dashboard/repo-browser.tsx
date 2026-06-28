@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   LockIcon,
   GlobeIcon,
@@ -16,14 +17,20 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { RepoStatsDialog } from "@/components/dashboard/repo-stats-dialog"
 
 const STORAGE_KEY = "pullguard:tracked-repos"
 
 export function RepoBrowser({ repos }: { repos: GitHubRepo[] }) {
+  const router = useRouter()
   const [query, setQuery] = useState("")
   const [tracked, setTracked] = useState<number[]>([])
-  const [active, setActive] = useState<GitHubRepo | null>(null)
+
+  // Navigate to the repo's own page (not a popup) on card click.
+  function openRepo(repo: GitHubRepo) {
+    router.push(
+      `/dashboard/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+    )
+  }
 
   // Persist the user's tracked selection across reloads.
   useEffect(() => {
@@ -79,7 +86,7 @@ export function RepoBrowser({ repos }: { repos: GitHubRepo[] }) {
                 repo={repo}
                 tracked
                 onToggle={() => toggleTrack(repo.id)}
-                onOpen={() => setActive(repo)}
+                onOpen={() => openRepo(repo)}
               />
             ))}
           </div>
@@ -103,7 +110,7 @@ export function RepoBrowser({ repos }: { repos: GitHubRepo[] }) {
             repo={repo}
             tracked={tracked.includes(repo.id)}
             onToggle={() => toggleTrack(repo.id)}
-            onOpen={() => setActive(repo)}
+            onOpen={() => openRepo(repo)}
           />
         ))}
         {filtered.length === 0 ? (
@@ -112,12 +119,6 @@ export function RepoBrowser({ repos }: { repos: GitHubRepo[] }) {
           </p>
         ) : null}
       </div>
-
-      <RepoStatsDialog
-        repo={active}
-        open={active !== null}
-        onOpenChange={(o) => !o && setActive(null)}
-      />
     </div>
   )
 }

@@ -22,9 +22,24 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "openai/gpt-4o-mini"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    # Model used for the PR-review reasoning step (distinct from the per-file
+    # describer above). Gemini 2.5 Flash via OpenRouter by default.
+    reviewer_model: str = "google/gemini-2.5-flash"
 
     # CORS: the Next.js frontend origin allowed to call this service.
     frontend_origin: str = "http://localhost:3000"
+
+    # --- GitHub App (PR webhook + review write-back) -------------------------
+    # The App receives `pull_request` events at POST /webhook/github and posts
+    # a review comment back using a short-lived installation token. If these are
+    # empty the webhook endpoint refuses (no silent unauthenticated path).
+    github_app_id: str = ""
+    github_app_slug: str = ""
+    # Path to the App's RSA private key (.pem) downloaded from the App settings.
+    github_app_private_key_path: str = ""
+    # Shared secret configured in the App's webhook settings; used to verify the
+    # X-Hub-Signature-256 HMAC on every delivery. Required to trust a payload.
+    github_webhook_secret: str = Field(default="", repr=False)
 
     # Neo4j Aura: the knowledge graph of the analysed repo is written here.
     # All four arrive from the Aura instance dashboard / connection file. If
@@ -61,13 +76,6 @@ class Settings(BaseSettings):
     browser_use_api_key: str = Field(default="", repr=False)
     # How many routes to crawl in parallel (each is its own cloud session).
     crawl_browseruse_concurrency: int = 3
-
-    # --- Supabase Storage (S3 bucket for screenshots) ------------------------
-    # If service_role_key is empty, the crawler falls back to inlining a base64
-    # data: URI so the frontend can still display the screenshot.
-    supabase_url: str = ""
-    supabase_service_role_key: str = Field(default="", repr=False)
-    supabase_storage_bucket: str = "crawl-artifacts"
 
     # How long finished jobs are retained in the in-memory store (seconds).
     job_ttl_seconds: int = 3600

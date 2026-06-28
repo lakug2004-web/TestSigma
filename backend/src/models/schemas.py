@@ -275,3 +275,37 @@ class JobStatus(BaseModel):
 class JobCreated(BaseModel):
     job_id: str
     state: JobState
+
+
+class ReasonRequest(BaseModel):
+    """Payload the frontend webhook forwards to start a PR review.
+
+    `installation_id` is informational; the backend mints its own installation
+    token from `full_name` so it never trusts a client-supplied token.
+
+    The backend holds no database, so the frontend supplies the repo context it
+    persists — the cached AST `tree`, the browser-use `crawl`, and the ingested
+    `requirements`. Any layer may be omitted; the reviewer degrades gracefully
+    (e.g. analysing the PR head live when `tree` is absent).
+    """
+
+    full_name: str = Field(..., description="owner/repo")
+    pr_number: int
+    installation_id: int | None = None
+    tree: dict[str, Any] | None = None
+    crawl: dict[str, Any] | None = None
+    requirements: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class GraphConnectRequest(BaseModel):
+    """Connect the three knowledge-graph layers for a repo in Neo4j.
+
+    The frontend supplies the context (from its own store) the backend used to
+    read from Postgres: the cached AST `tree`, the browser-use `crawl`, and the
+    ingested `requirements`.
+    """
+
+    full_name: str = Field(..., description="owner/repo")
+    tree: dict[str, Any] | None = None
+    crawl: dict[str, Any] | None = None
+    requirements: list[dict[str, Any]] = Field(default_factory=list)

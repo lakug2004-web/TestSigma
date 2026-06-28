@@ -27,8 +27,10 @@ from src.services.ast_parser import build_tree
 from src.services.crawler import crawl_app
 from src.services.describer import describe_tree
 from src.services.github_fetch import download_tarball
+from src.services.github_app import fetch_pr_context, installation_token, upsert_pr_comment
 from src.services.graph import build_knowledge_graph
 from src.services.ingest import ingest_doc
+from src.services.pr_review import MARK_BEGIN, RepoContext, render_comment, review_pr
 
 logger = logging.getLogger("jobs")
 
@@ -153,6 +155,36 @@ async def run_crawl_job(job_id: str, req: CrawlRequest) -> None:
         status.state = JobState.error
         status.error = str(exc)
         status.message = "failed"
+
+
+async def run_reason_job(
+    full_name: str, pr_number: int, ctx: RepoContext
+) -> None:
+    """Webhook-triggered: review one PR and post the verdict back onto it.
+
+    Detached from the HTTP request. Mints an installation token, takes the
+    repo's cached AST + knowledge graph + browser-use crawl supplied by the
+    caller (the frontend, which owns persistence), adds the live PR diff +
+    issues, runs the Gemini reviewer, and upserts a single PullGuard comment on
+    the PR. Best-effort: failures are logged, not raised.
+    """
+    try:
+        logger.info("reason START %s#%d", full_name, pr_number)
+        token = await installation_token(full_name)
+        pr = await fetch_pr_context(token, full_name, pr_number)
+        verdict, tree = await review_pr(token, pr, ctx)
+        graph_url = tree.graph.console_url if tree and tree.graph else None
+        body = render_comment(pr, verdict, ctx, graph_url)
+        url = await upsert_pr_comment(token, full_name, pr_number, body, MARK_BEGIN)
+        logger.info(
+            "reason DONE %s#%d — verdict=%s posted=%s",
+            full_name,
+            pr_number,
+            verdict.verdict,
+            url,
+        )
+    except Exception as exc:  # noqa: BLE001 - webhook path must never raise
+        logger.exception("reason FAILED %s#%d: %s", full_name, pr_number, exc)
 
 
 async def run_ingest_job(job_id: str, req: IngestRequest) -> None:
