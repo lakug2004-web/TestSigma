@@ -1,14 +1,16 @@
 # PullGuard
 
+![Architecture](./Architecture.png)
+
 A testing-intelligence agent that **crawls a live app, ingests a product spec, builds a three-layer knowledge graph (Requirements / UI / Code), and reasons the *blast radius* of a real Pull Request** — posting a non-engineer-readable report back onto the PR.
 
 Built for the Testsigma AI-Engineer take-home (Part A = working system, Part B = design doc).
 
-## Documents (read these first)
+## Documents — read in this order
 
-- **[`doc/explainer.md`](doc/explainer.md)** — the plain-English tour for an interviewer or a non-technical stakeholder. Start here if you want the *what* and *why* without the engineering.
-- **[`doc/design.md`](doc/design.md)** — the design document (Part B): agent decomposition, graph schema, absence modelling, confidence, eval, scope decisions, and what I'd build next. **Opinionated and honest about what's cut.**
-- **[`doc/sample-output.md`](doc/sample-output.md)** — the blast-radius report the system posts on a real PR (`lakug2004-web/TODO` #4), in the form a QA lead reads.
+1. **[`doc/explainer.md`](doc/explainer.md)** — the plain-English tour for an interviewer or a non-technical stakeholder. Start here for the *what* and *why* without the engineering.
+2. **[`doc/design.md`](doc/design.md)** — the design document (Part B): agent decomposition, graph schema, absence modelling, confidence, eval, scope decisions, and what I'd build next. **Opinionated and honest about what's cut.**
+3. **[`doc/sample-output.md`](doc/sample-output.md)** — the blast-radius report the system posts on a real PR (`lakug2004-web/TODO` #4), in the form a QA lead reads.
 
 ## What's in the repo
 
@@ -49,14 +51,34 @@ bunx prisma migrate deploy
 bun dev                # http://localhost:3000
 ```
 
-### 3. Drive the pipeline from the dashboard
+### 3. Expose the webhook (only to test PR reasoning)
+
+GitHub can't reach `localhost`, so tunnel the PR webhook to your machine. Pick one:
+
+```bash
+# Option A — ngrok: public URL → backend :8000
+ngrok http 8000
+#   → https://<id>.ngrok-free.app  (use this as the GitHub App webhook URL + /webhooks/github)
+
+# Option B — smee: replay GitHub deliveries → frontend route
+npx smee-client -u https://smee.io/AbC123 -t http://localhost:3000/api/webhooks/github
+#   set the GitHub App webhook URL to the smee channel  https://smee.io/AbC123
+```
+
+**Configure the GitHub App webhook** (Settings → Developer settings → GitHub Apps → your app):
+- **Webhook URL** = the ngrok HTTPS URL (`…/api/webhooks/github`) **or** the smee channel URL.
+- **Webhook secret** = same value as `WEBHOOK_SECRET` in `backend/.env`.
+- **Subscribe to events**: `Pull request`. Install the app on the target repo.
+- Open/update a PR → GitHub delivers `pull_request` → tunnel → app posts the blast-radius comment.
+
+### 4. Drive the pipeline from the dashboard
 1. **Analyze** a repo → builds the Python AST + descriptions + Neo4j **code** subgraph (the AST graph is browsable from the dashboard).
 2. **Ingest** a PRD/README/`docs/` → structured **requirements**.
 3. **Crawl** → supply an **explicit list of URLs** (deliberate: reproducible, low-hallucination) → captured **screens** + screen-relationship graph.
 4. **Connect 3 layers** → writes Requirement + Screen nodes, cross-layer edges, and **absence** (`MISSING_UI_COVERAGE` → `CoverageGap`).
 5. **Reason** → open/update a PR on the repo; the GitHub App webhook fires `pr_review`, which posts the **blast-radius** comment.
 
-### 4. See the absence query
+### 5. See the absence query
 In the Aura console:
 ```cypher
 MATCH (r:Requirement {full_name:"lakug2004-web/TODO"})-[:MISSING_UI_COVERAGE]->(:CoverageGap)
@@ -73,11 +95,3 @@ RETURN r.req_id, r.title
 - Crawler schema/docstrings (`schemas.py`) still describe an **earlier Playwright path**; the live crawler uses browser-use cloud. Stale contract.
 - **No numeric confidence, no eval harness, no human-in-the-loop stop** — documented honestly in design doc §7 & §8.
 - In-memory job store (single process).
-
-## Deliverables checklist
-
-- [x] Runnable code (backend + frontend)
-- [x] Design document — [`doc/design.md`](doc/design.md) (markdown; brief allows PDF *or* markdown)
-- [x] Plain-English explainer — [`doc/explainer.md`](doc/explainer.md)
-- [x] Sample output — [`doc/sample-output.md`](doc/sample-output.md)
-- [ ] Loom walkthrough — record separately
